@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>ดอยไตแลง S69 — 3D Terrain (FABDEM)</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl/dist/maplibre-gl.css" />
+<script src="https://unpkg.com/maplibre-gl/dist/maplibre-gl.js"></script>
+<!-- maplibre-cog-protocol: อ่าน COG เป็น terrain/raster ตรงจาก URL (ไม่ต้อง tile server) -->
+<script src="https://unpkg.com/@geomatico/maplibre-cog-protocol/dist/index.js"></script>
+<style>
+  html,body{margin:0;height:100%;background:#0b1220;font-family:system-ui,"Segoe UI",sans-serif}
+  #map{position:absolute;inset:0}
+  .chip{position:absolute;z-index:2;background:rgba(15,23,42,.82);color:#e5e7eb;
+        border:1px solid rgba(148,163,184,.25);border-radius:10px;padding:10px 14px;
+        backdrop-filter:blur(6px)}
+  #title{top:12px;left:12px;font-weight:600;line-height:1.35}
+  #title small{display:block;font-weight:400;color:#94a3b8;font-size:12px}
+  #panel{bottom:24px;left:12px;font-size:13px;color:#cbd5e1}
+  #panel label{display:flex;align-items:center;gap:8px;margin:2px 0}
+  #panel input[type=range]{width:130px}
+  #panel button{margin-top:6px;background:#1e293b;color:#e5e7eb;border:1px solid #334155;
+        border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px}
+  #err{top:12px;left:50%;transform:translateX(-50%);color:#fecaca;display:none;max-width:80%}
+</style>
+</head>
+<body>
+<div id="title" class="chip">ดอยไตแลง S69 · 3D Terrain
+  <small>ผิวความสูง = FABDEM จริง · drape = NDVI · โครงการ Sn-W</small></div>
+<div id="err" class="chip"></div>
+<div id="panel" class="chip">
+  <label>Exaggeration <input id="exag" type="range" min="1" max="3" step="0.1" value="1.6"><span id="exagv">1.6×</span></label>
+  <label><input id="ndvi" type="checkbox" checked> แสดง NDVI drape</label>
+  <button id="reset">รีเซ็ตมุมมอง</button>
+</div>
+<div id="map"></div>
+
+<script>
+// ── แก้ BASE ถ้าใช้ repo/host อื่น ───────────────────────────────────────────
+const BASE = "https://raw.githubusercontent.com/Sutin15/dtl-cog/main";
+const DEM  = `${BASE}/DTL_DEM_FABDEM_3857_cog.tif`;     // EPSG:3857 COG
+const NDVI = `${BASE}/Doi_Tai_Leng_NDVI_3857_cog.tif`;  // EPSG:3857 COG
+const CENTER = [98.17996, 19.81999];  // lng, lat (ดอยไตแลง)
+const NODATA = -9999;
+// ─────────────────────────────────────────────────────────────────────────────
+
+maplibregl.addProtocol("cog", MaplibreCOGProtocol.cogProtocol);
+
+// ระบายสี NDVI: ฟ้า/น้ำตาล (พืชน้อย) → เขียวเข้ม (พืชหนา) · nodata = โปร่งใส
+MaplibreCOGProtocol.setColorFunction(NDVI, (pixel, color) => {
+  const v = pixel[0];
+  if (!isFinite(v) || v <= -1000) { color.set([0,0,0,0]); return; }
+  const t = Math.max(0, Math.min(1, (v + 0.1) / 0.9)); // -0.1..0.8 -> 0..1
+  const lerp = (a,b)=>Math.round(a+(b-a)*t);
+  color.set([ lerp(196,26), lerp(170,120), lerp(120,40), 255 ]); // tan -> green
+});
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://tiles.openfreemap.org/styles/liberty",
+  center: CENTER, zoom: 12.2, pitch: 68, bearing: -18, maxPitch: 85,
+  hash: true
+});
+map.addControl(new maplibregl.NavigationControl({visualizePitch:true}), "top-right");
+map.addControl(new maplibregl.FullscreenControl(), "top-right");
+map.addControl(new maplibregl.ScaleControl({unit:"metric"}));
+
+function showErr(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";}
+map.on("error", e => { if(e && e.error) showErr("โหลดข้อมูลมีปัญหา: "+e.error.message); });
+
+map.on("load", () => {
+  // 1) DEM เป็น raster-dem (ผิว 3D ความสูงจริง)
+  map.addSource("dem", { type:"raster-dem", url:`cog://${DEM}#dem`, tileSize:256 });
+  map.setTerrain({ source:"dem", exaggeration:1.6 });
+  map.setSky({ "sky-color":"#7fb2ff", "horizon-color":"#cfe3ff", "fog-color":"#dfeaff",
+               "sky-horizon-blend":0.5, "horizon-fog-blend":0.5, "fog-ground-blend":0.4 });
+
+  // 2) hillshade เงาภูเขาจาก DEM เดียวกัน
+  map.addLayer({ id:"hill", type:"hillshade", source:"dem",
+                 paint:{ "hillshade-exaggeration":0.6,
+                         "hillshade-shadow-color":"#1f2937" } });
+
+  // 3) NDVI drape ทาบบนผิว 3D
+  map.addSource("ndvi", { type:"raster", url:`cog://${NDVI}`, tileSize:256 });
+  map.addLayer({ id:"ndvi", type:"raster", source:"ndvi",
+                 paint:{ "raster-opacity":0.72, "raster-resampling":"nearest" } });
+});
+
+// ── controls ──────────────────────────────────────────────────────────────
+document.getElementById("exag").addEventListener("input", e => {
+  const v = parseFloat(e.target.value);
+  document.getElementById("exagv").textContent = v.toFixed(1)+"×";
+  if (map.getTerrain()) map.setTerrain({ source:"dem", exaggeration:v });
+});
+document.getElementById("ndvi").addEventListener("change", e => {
+  if (map.getLayer("ndvi"))
+    map.setLayoutProperty("ndvi","visibility", e.target.checked?"visible":"none");
+});
+document.getElementById("reset").addEventListener("click", () =>
+  map.easeTo({ center:CENTER, zoom:12.2, pitch:68, bearing:-18 }));
+</script>
+</body>
+</html>
